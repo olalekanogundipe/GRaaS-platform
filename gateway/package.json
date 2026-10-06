@@ -1,0 +1,13 @@
+{
+  "name": "graas-gateway",
+  "version": "1.2.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "undici": "^6.19.0",
+    "pg": "^8.11.0"
+  }
+}

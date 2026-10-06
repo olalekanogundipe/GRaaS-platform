@@ -1,0 +1,60 @@
+{
+  "name": "@o-lang/olang",
+  "version": "1.4.3",
+  "author": "Olalekan Ogundipe <info@olang.cloud>",
+  "description": "O-Lang: A governance language for user-directed, rule-enforced agent workflows with native African language PII protection.",
+  "main": "./src/runtime/index.js",
+  "bin": {
+    "olang": "./cli/olang.js"
+  },
+  "files": [
+    "src/",
+    "cli/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node cli/olang.js",
+    "test": "jest",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "commander": "^12.0.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.26.0",
+    "lodash": "^4.17.21"
+  },
+  "optionalDependencies": {
+    "pg": "^8.11.0",
+    "mysql2": "^3.6.0",
+    "mongodb": "^6.3.0",
+    "better-sqlite3": "^9.4.0"
+  },
+  "keywords": [
+    "agent",
+    "governance",
+    "workflow",
+    "llm",
+    "automation",
+    "olang",
+    "ai",
+    "pii-redaction",
+    "african-languages",
+    "ai-safety",
+    "twi",
+    "ghana",
+    "akan"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/O-Lang-Central/olang-kernel.git"
+  },
+  "homepage": "https://github.com/O-Lang-Central/olang-kernel#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

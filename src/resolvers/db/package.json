@@ -1,0 +1,18 @@
+{
+  "name": "@graas/db-resolver",
+  "version": "1.0.0",
+  "description": "Database resolver for GRaaS Platform (Claims & Validation)",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"DB Resolver tests not yet configured\" && exit 0"
+  },
+  "keywords": [
+    "db",
+    "sqlite",
+    "graas",
+    "olang"
+  ],
+  "author": "O-Lang-Central",
+  "license": "UNLICENSED"
+}
