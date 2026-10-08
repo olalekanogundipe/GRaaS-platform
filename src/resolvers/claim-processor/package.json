@@ -1,0 +1,13 @@
+﻿{
+  "name": "@o-lang/claim-processor",
+  "version": "1.0.0",
+  "description": "O-Lang resolver for insurance claim processing - Global Gateway Integration",
+  "main": "index.js",
+  "type": "module",
+  "keywords": ["o-lang", "resolver", "insurance", "claims", "graas", "global"],
+  "author": "GRaaS Platform",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,8 +1,56 @@
-// src/core.js
-import { runWorkflow } from "./olang.js";
+﻿import { runWorkflow, getWorkflow } from "./olang.js";
 import { store } from "./store.js";
-import { calculateBilling, createInvoice, processPayment } from "./billing.js";
+import { calculateBilling } from "./billing.js";
 
+//  CONTRACT MANAGEMENT 
+export async function createContract(contractData) {
+  const {
+    contractId, providerId, name, requiredCapabilities,
+    permittedActions, prohibitedActions, pricePerResult,
+    commissionRate, agentId, billingEnabled
+  } = contractData;
+
+  const existing = store.getContract(contractId);
+  if (existing) {
+    console.log(`[GRaaS Core]  Contract '${contractId}' exists. Updating...`);
+  }
+
+  let provider = store.getProvider(providerId);
+  if (!provider) {
+    console.log(`[GRaaS Core] Creating default provider: ${providerId}`);
+    provider = {
+      providerId,
+      name: providerId,
+      stripeCustomerId: null,
+      createdAt: new Date().toISOString()
+    };
+    store.saveProvider(provider);
+  }
+
+  const contract = {
+    contractId,
+    providerId,
+    name,
+    requiredCapabilities: requiredCapabilities || [],
+    permittedActions: permittedActions || [],
+    prohibitedActions: prohibitedActions || [],
+    pricePerResult,
+    commissionRate: commissionRate || 0.20,
+    agentId,
+    billingEnabled: billingEnabled !== false,
+    status: 'ACTIVE',
+    createdAt: existing?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  store.saveContract(contract);
+  console.log(`[GRaaS Core]  Contract saved: ${contractId}`);
+  console.log(`[GRaaS Core]    Capabilities: ${contract.requiredCapabilities.join(', ')}`);
+  console.log(`[GRaaS Core]    Price: $${(pricePerResult / 100).toFixed(2)} | Commission: ${(contract.commissionRate * 100).toFixed(0)}%`);
+  return contract;
+}
+
+//  EXECUTION 
 export async function createExecution(contractId, inputs) {
   const contract = store.getContract(contractId);
   if (!contract) throw new Error(`Contract ${contractId} not found`);
@@ -12,21 +60,24 @@ export async function createExecution(contractId, inputs) {
 
   try {
     const executionOptions = { contract };
+    const workflow = getWorkflow(workflowName);
+    if (!workflow) throw new Error(`Workflow ${workflowName} not found`);
 
-    // ✅ DYNAMIC CAPABILITY RESOLUTION
-    const workflow = WORKFLOWS[workflowName];
-    const requiredCapabilities = workflow.requiredCapabilities || [];
+    const requiredCapabilities = contract.requiredCapabilities || [];
 
     if (requiredCapabilities.length > 0) {
-      console.log(`[GRaaS Core] 🔍 Resolving ${requiredCapabilities.length} capabilities...`);
+      console.log(`[GRaaS Core]  Resolving ${requiredCapabilities.length} capabilities...`);
 
+      //  CRITICAL IPv4 FIX: Hardcoded fallback to bypass Windows localhost IPv6 bug
+      const gatewayUrl = process.env.GRAAS_GATEWAY_URL || "http://127.0.0.1:3000";
+      
       const resolutionResponse = await fetch(
-        `${process.env.GRAAS_GATEWAY_URL}/v1/capabilities/resolve`,
+        `${gatewayUrl}/v1/capabilities/resolve`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-api-key': process.env.GRAAS_API_KEY
+            'x-api-key': process.env.GRAAS_API_KEY || 'dev-key'
           },
           body: JSON.stringify({
             capabilities: requiredCapabilities,
@@ -41,29 +92,34 @@ export async function createExecution(contractId, inputs) {
       }
 
       const { resolution } = await resolutionResponse.json();
-      console.log(`[GRaaS Core] ✅ All capabilities resolved`);
+      console.log(`[GRaaS Core]  All capabilities resolved`);
 
-      // ✅ BUILD THE CHAIN with failover support
       executionOptions._chain = [];
-      
       for (const cap of requiredCapabilities) {
         const agents = resolution[cap];
-        
-        // Add all agents for this capability (for failover)
         for (const agent of agents) {
+          // The kernel records its own steps (read_claim, submit_claim, ...) through the db
+          // resolver. Never delegate a capability back to the kernel itself.
+          if (agent.agentId === "olang-kernel") continue;
           executionOptions._chain.push({
             resolverName: cap,
+            agentId: agent.agentId,
+            delegateTo: agent.agentId,
+            to: agent.agentId,
+            targetAgent: agent.agentId,
+            endpoint: agent.endpoint,
+            trustedPubkey: agent.pubkey,
+            capability: cap,
             manifest: {
               agentId: agent.agentId,
               capability: cap,
               protocol: "http",
               endpoint: agent.endpoint,
               trustedPubkey: agent.pubkey,
-              inputMap: {
-                claimId: "claimId",
-                claim_data: "claim_data"
-              },
-              match: "exact",
+              // Paths resolve against the workflow context; claim_data is saved by the read_claim step.
+              inputMap: cap === "fraud_check"
+                ? { claimId: "claimId", applicant: "claim_data.applicant", amount: "claim_data.amount" }
+                : { claimId: "claimId" },
               returnField: "result",
               timeout_ms: 30000,
               retries: 2
@@ -71,8 +127,7 @@ export async function createExecution(contractId, inputs) {
           });
         }
       }
-
-      // ✅ GRaaS session config
+      
       executionOptions.graas = {
         contractId: contract.contractId,
         agentId: "olang-kernel",
@@ -117,6 +172,7 @@ export async function createExecution(contractId, inputs) {
   }
 }
 
+//  VERIFICATION & BILLING 
 export async function verifyExecution(executionId) {
   const execution = store.getExecution(executionId);
   if (!execution) throw new Error(`Execution ${executionId} not found`);
@@ -128,7 +184,6 @@ export async function verifyExecution(executionId) {
 
   const br = execution.businessResult || {};
   const resultData = br.submission_result || br.result?.submission_result || br.response || br;
-  
   const isCompleted = resultData?.status === "SUCCESS" || resultData?.status === "COMPLETED";
   
   if (!isCompleted) {
@@ -139,7 +194,6 @@ export async function verifyExecution(executionId) {
   }
 
   const graas = execution.olangEvidence?.graas;
-  
   if (graas && graas.certificate) {
     const certStatus = graas.certificate.status;
     if (certStatus === "COMPLETED" || certStatus === "VERIFIED" || certStatus === "HELD_FOR_REVIEW") {
@@ -169,7 +223,6 @@ export async function verifyExecution(executionId) {
   execution.verification = verification;
   store.saveExecution(execution);
 
-  // ✅ BILLING LOGIC
   if (execution.billable) {
     const billing = await calculateBilling(execution, contract);
     execution.billing = billing;
@@ -179,10 +232,8 @@ export async function verifyExecution(executionId) {
     store.saveExecution(execution);
     store.saveCertificate(certificate);
     
-    // Record metering
     store.incrementMeter(contract.providerId, execution.contractId, billing.totalAmount);
     
-    // Queue invoice if provider has billing enabled
     if (contract.billingEnabled) {
       await queueInvoiceItem(contract.providerId, billing);
     }
@@ -208,7 +259,6 @@ function createResultCertificate(execution, contract) {
 }
 
 async function queueInvoiceItem(providerId, billing) {
-  // Queue this billing item for the next monthly invoice
   const invoiceQueue = store.getInvoiceQueue(providerId) || [];
   invoiceQueue.push({
     ...billing,

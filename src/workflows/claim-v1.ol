@@ -1,32 +1,25 @@
-Workflow "Claim Processor" with claimId
+﻿Workflow "Claim Processor" with claimId
 
-# ─── GOVERNANCE BOUNDARY ─────────────────────────────────────────────────────
 Allow resolvers:
-- db
-- node-fraud-checker
+  - db
+  - claim-processor
+  - read_claim
+  - fraud_check
+  - submit_claim
+  - flag_for_review
 
-# ─── STEP 1: RETRIEVAL ───────────────────────────────────────────────────────
-Step 1: Ask db "read_claim" "{claimId}"
+Step 1: Ask read_claim "execute" "{claimId}"
 Save as claim_data
 
-# ─── STEP 2: FRAUD CHECK (The governance gate) ───────────────────────────────
-# Pass the claimId string, not the whole object, to satisfy O-Lang safety rules
-Step 2: Ask node-fraud-checker "fraud_check" "{claimId}"
+Step 2: Ask fraud_check "execute" "{claimId}"
 Save as fraud_result
 
-# ─── STEP 3: CONDITIONAL EXECUTION ───────────────────────────────────────────
-Step 3: If {fraud_result.is_fraud} equals "true"
-  Ask db "flag_for_review" "{claimId}"
-  Save as review_result
+Step 3: If {fraud_result.isFraud} equals "true"
+  Ask flag_for_review "execute" "{claimId}"
+  Save as final_result
 Else
-  Ask db "validate_fields" "{claimId}"
-  Save as is_valid
-  
-  If {is_valid} equals "true"
-    Ask db "submit_claim" "{claimId}"
-    Save as submission_result
-  EndIf
+  Ask submit_claim "execute" "{claimId}"
+  Save as final_result
 EndIf
 
-# ─── STEP 4: OUTPUT ──────────────────────────────────────────────────────────
-Return submission_result
+Return final_result

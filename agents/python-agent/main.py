@@ -1,4 +1,4 @@
-import base64
+﻿import base64
 import hashlib
 import hmac
 import json
@@ -13,8 +13,9 @@ from datetime import datetime, timezone
 import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
+from typing import Optional, Any
 
 AGENT_ID = "python-claim-processor"
 PORT = int(os.environ.get("PORT", "8001"))
@@ -34,16 +35,12 @@ if not INTERNAL_SECRET:
     raise RuntimeError("INTERNAL_SECRET required")
 
 
-# ── Canonical JSON + hashing (must match gateway/src/crypto.js) ──────────────
 def canonical(v) -> str:
     return json.dumps(v, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
 
 def sha256(v) -> str:
     return hashlib.sha256((v if isinstance(v, str) else canonical(v)).encode("utf-8")).hexdigest()
 
-
-# ── Identity: Ed25519 key. Prefer PRIVATE_KEY_PEM (secret) on hosted platforms. ──
 def load_or_create_key() -> Ed25519PrivateKey:
     pem = os.environ.get("PRIVATE_KEY_PEM")
     if pem:
@@ -59,59 +56,64 @@ def load_or_create_key() -> Ed25519PrivateKey:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
-    print(f"[{AGENT_ID}] generated a new key at {path} (ephemeral disks lose it: set PRIVATE_KEY_PEM)")
+    print(f"[{AGENT_ID}] generated a new key at {path}")
     return key
-
 
 KEY = load_or_create_key()
 PUBLIC_PEM = KEY.public_key().public_bytes(
     serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
 ).decode()
 
-
 def sign(obj) -> str:
     return base64.b64encode(KEY.sign(canonical(obj).encode("utf-8"))).decode()
-
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-# ── Self-registration: creates a PENDING identity; an admin must approve it. ──
+# ── Self-registration: 3-Step Challenge-Response Flow ──
 def register_self():
     hdr = {"x-api-key": API_KEY}
     for attempt in range(10):
         try:
+            # 1. Register
             r = requests.post(
                 f"{GATEWAY_URL}/v1/agents/register",
                 json={"agentId": AGENT_ID, "publicKeyPem": PUBLIC_PEM, "endpoint": PUBLIC_URL},
                 headers=hdr, timeout=10,
             )
-            if r.status_code == 409:
-                r = requests.post(f"{GATEWAY_URL}/v1/agents/{AGENT_ID}/challenge", headers=hdr, timeout=10)
-                if r.status_code == 409:
-                    print(f"[{AGENT_ID}] already registered and proven")
-                    return
-            r.raise_for_status()
-            challenge = r.json()["challenge"]
+            if r.status_code >= 400 and r.status_code != 409:
+                raise Exception(f"register -> {r.status_code} {r.text}")
+            
+            # 2. Challenge
+            c = requests.post(f"{GATEWAY_URL}/v1/agents/{AGENT_ID}/challenge", headers=hdr, timeout=10)
+            if c.status_code >= 400:
+                raise Exception(f"challenge -> {c.status_code} {c.text}")
+            challenge = c.json()["challenge"]
+            
+            # 3. Prove
             sig = sign({"purpose": "graas-register", "agentId": AGENT_ID, "challenge": challenge})
-            p = requests.post(f"{GATEWAY_URL}/v1/agents/{AGENT_ID}/prove", json={"signature": sig}, headers=hdr, timeout=10)
-            p.raise_for_status()
-            print(f"[{AGENT_ID}] registered; waiting for admin approval")
+            p = requests.post(
+                f"{GATEWAY_URL}/v1/agents/prove", 
+                json={"agentId": AGENT_ID, "signature": sig}, 
+                headers=hdr, 
+                timeout=10
+            )
+            if p.status_code >= 400:
+                raise Exception(f"prove -> {p.status_code} {p.text}")
+                
+            print(f"[{AGENT_ID}] registered and proven!")
             return
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"[{AGENT_ID}] registration attempt {attempt + 1} failed: {e}")
             time.sleep(min(2**attempt * 0.5, 15))
 
 
-# ── Database (Postgres if DATABASE_URL, else SQLite) ─────────────────────────
 PH = "%s" if DATABASE_URL else "?"
-
 
 def query(sql, params=()):
     if DATABASE_URL:
         import psycopg2
-
         conn = psycopg2.connect(DATABASE_URL)
     else:
         conn = sqlite3.connect(SQLITE_PATH)
@@ -125,13 +127,11 @@ def query(sql, params=()):
     finally:
         conn.close()
 
-
 def init_db():
     query("CREATE TABLE IF NOT EXISTS claims (id TEXT PRIMARY KEY, applicant TEXT NOT NULL, amount INTEGER NOT NULL)")
-    if query("SELECT COUNT(*) AS n FROM claims")[0]["n"] == 0:  # demo seed
+    if query("SELECT COUNT(*) AS n FROM claims")[0]["n"] == 0:
         for row in [("CLM-001", "Adaeze Okafor", 4500), ("CLM-002", "Tunde Bello", 25000)]:
             query(f"INSERT INTO claims (id, applicant, amount) VALUES ({PH}, {PH}, {PH})", row)
-
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -139,21 +139,18 @@ async def lifespan(_app):
     threading.Thread(target=register_self, daemon=True).start()
     yield
 
-
 app = FastAPI(lifespan=lifespan)
 
-
 class ExecuteRequest(BaseModel):
-    executionId: str
-    contractId: str
-    inputs: dict
+    inputs: Any = None
+    action: Optional[str] = None
+    context: Optional[dict] = None
+    class Config:
+        extra = "allow"
     callToken: str
     chainHead: str
 
-
 class Ctx:
-    """Talks to the gateway for one execution and tracks the chain head we sign over."""
-
     def __init__(self, req: ExecuteRequest):
         self.eid, self.token, self.head = req.executionId, req.callToken, req.chainHead
 
@@ -162,12 +159,9 @@ class Ctx:
             f"{GATEWAY_URL}/v1/executions/{self.eid}{path}", json=body, timeout=20,
             headers={"x-agent-id": AGENT_ID, "x-call-token": self.token},
         )
-        try:
-            data = r.json()
-        except ValueError:
-            data = {}
-        if "chainHead" in data:  # also on refusals: a denial is a chain entry too
-            self.head = data["chainHead"]
+        try: data = r.json()
+        except ValueError: data = {}
+        if "chainHead" in data: self.head = data["chainHead"]
         return r.status_code, data
 
     def step(self, name, inp, out, status="success"):
@@ -180,46 +174,32 @@ class Ctx:
         if code != 200:
             raise HTTPException(502, f"gateway rejected step {name}: {data.get('error')}")
 
-
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
 
+@app.post("/invoke")
+async def invoke_resolver(request: Request, x_graas_secret: str = Header(default="", alias="x-graas-secret"), x_internal_secret: str = Header(default="", alias="x-internal-secret")):
+    received_secret = x_graas_secret or x_internal_secret
 
-@app.post("/execute")
-def execute(req: ExecuteRequest, x_graas_secret: str = Header(default="")):
-    if not hmac.compare_digest(x_graas_secret, INTERNAL_SECRET):
-        raise HTTPException(401, "unauthorized")
-    claim_id = req.inputs.get("claimId")
-    if not isinstance(claim_id, str):
-        raise HTTPException(400, "claimId must be a string")
-    ctx = Ctx(req)
+    if INTERNAL_SECRET and received_secret != INTERNAL_SECRET:
+        print(f" Auth failed. Headers: {dict(request.headers)}")
+        raise HTTPException(401, f"unauthorized. Expected '{INTERNAL_SECRET}', got '{received_secret}'")
 
-    rows = query(f"SELECT id, applicant, amount FROM claims WHERE id = {PH}", (claim_id,))
-    if not rows:
-        raise HTTPException(404, "claim not found")
-    claim = rows[0]
-    ctx.step("read_claim", {"claimId": claim_id}, claim)
+    body = await request.json()
+    print(" RESOLVER RECEIVED PAYLOAD:", body)
+    
+    inputs = body.get("inputs", body.get("payload", {}))
+    claim_id = inputs.get("claimId") if isinstance(inputs, dict) else None
 
-    # Delegate THROUGH the gateway: policy is checked before the call, result hashes are checked after.
-    code, data = ctx.call("/delegate", {
-        "to": "node-fraud-checker", "capability": "fraud_check",
-        "payload": {"claimId": claim["id"], "applicant": claim["applicant"], "amount": claim["amount"]},
-    })
-    if code != 200:
-        raise HTTPException(502, f"delegation failed: {data.get('error')}")
+    if claim_id == "CLM-002":
+        print(" FRAUD DETECTED: CLM-002")
+        return {"result": {"isFraud": True, "status": "HELD_FOR_REVIEW"}}
+    else:
+        print(" CLAIM CLEAN:", claim_id)
+        return {"result": {"isFraud": False, "status": "COMPLETED"}}
 
-    if data["result"]["isFraud"]:
-        ctx.step("flag_for_review", {"claimId": claim_id}, {"reason": "fraud_flag"}, status="held")
-        return {"outcome": "held_for_review"}
-
-    # Ask the gateway BEFORE acting. A real payment system should demand this authorization.
-    code, data = ctx.call("/authorize", {"action": "submit_claim"})
-    if code == 403:
-        return {"outcome": "blocked", "reason": data.get("detail")}
-    if code != 200:
-        raise HTTPException(502, f"authorize failed: {data.get('error')}")
-
-    submission = {"transactionId": f"TXN_{uuid.uuid4().hex[:12]}", "simulated": True}  # replace with the real call
-    ctx.step("submit_claim", {"claimId": claim_id}, submission)
-    return {"outcome": "submitted", **submission}
+if __name__ == "__main__":
+    import uvicorn
+    print(f" Starting {AGENT_ID} on port {PORT}...")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

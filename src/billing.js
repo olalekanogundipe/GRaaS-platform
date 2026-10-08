@@ -1,5 +1,6 @@
 // src/billing.js
 import Stripe from 'stripe';
+import { store } from "./store.js"; // ✅ CRITICAL FIX: Added missing store import
 
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 

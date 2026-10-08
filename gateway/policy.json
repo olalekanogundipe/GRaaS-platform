@@ -1,18 +1,41 @@
 {
   "version": "1.2.0",
   "platform": {
-    "commissionRate": 0.20,
+    "commissionRate": 0.2,
     "minimumFee": 10,
     "currency": "USD"
   },
   "contracts": {
     "claim-v1": {
+      "entryAgent": "olang-kernel",
       "orchestrator": "olang-kernel",
       "requiredCapabilities": ["read_claim", "fraud_check", "submit_claim", "flag_for_review"],
-      "delegationRules": {
+      "prohibited": [],
+      "agents": {
+        "olang-kernel": {
+          "capabilities": ["read_claim", "fraud_check", "submit_claim", "flag_for_review", "kernel_anchor"],
+          "mayDelegateTo": {
+            "python-claim-processor": ["read_claim", "submit_claim", "flag_for_review"],
+            "node-fraud-checker": ["fraud_check"]
+          }
+        },
+        "python-claim-processor": {
+          "capabilities": ["read_claim", "submit_claim", "flag_for_review"],
+          "mayDelegateTo": {}
+        },
+        "node-fraud-checker": {
+          "capabilities": ["fraud_check"],
+          "mayDelegateTo": {}
+        }
+      },
+      "preconditions": {
         "submit_claim": {
-          "requiresPriorStep": ["fraud_check"],
+          "requiresStep": ["fraud_check"],
           "denyIf": { "fraud": true }
+        },
+        "flag_for_review": {
+          "requiresStep": ["fraud_check"],
+          "denyIf": { "fraud": false }
         }
       },
       "outcomes": {
@@ -21,33 +44,9 @@
       },
       "billing": {
         "unit": "claim-delegated",
+        "unitPrice": 500,
         "billableOutcomes": ["COMPLETED"],
-        "commissionRate": 0.20
-      }
-    },
-    "transcription-v1": {
-      "orchestrator": "olang-kernel",
-      "requiredCapabilities": ["transcribe_audio", "translate_text"],
-      "outcomes": {
-        "COMPLETED": ["transcribe_audio", "translate_text"]
-      },
-      "billing": {
-        "unit": "minute-transcribed",
-        "billableOutcomes": ["COMPLETED"],
-        "commissionRate": 0.15
-      }
-    },
-    "kyc-v1": {
-      "orchestrator": "olang-kernel",
-      "requiredCapabilities": ["verify_identity", "check_sanctions"],
-      "outcomes": {
-        "COMPLETED": ["verify_identity", "check_sanctions"],
-        "REJECTED": ["verify_identity"]
-      },
-      "billing": {
-        "unit": "verification-attempt",
-        "billableOutcomes": ["COMPLETED", "REJECTED"],
-        "commissionRate": 0.25
+        "commissionRate": 0.2
       }
     }
   }

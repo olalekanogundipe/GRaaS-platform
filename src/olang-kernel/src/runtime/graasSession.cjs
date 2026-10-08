@@ -54,16 +54,16 @@ class GraasSession {
     return { status: r.status, data };
   }
 
-  async register() {
+        async register() {
     const h = { 'x-api-key': this.apiKey };
-    let r = await this._http('POST', '/v1/agents/register', { agentId: this.agentId, publicKeyPem: this.publicKeyPem, endpoint: 'http://localhost' }, h);
-    if (r.status === 409) {
-      r = await this._http('POST', `/v1/agents/${this.agentId}/challenge`, undefined, h);
-      if (r.status === 409) return 'already_proven';
-    }
+    const r = await this._http('POST', '/v1/agents/register', { agentId: this.agentId, publicKeyPem: this.publicKeyPem }, h);
     if (r.status >= 300) throw new GraasError(r.status, r.data.error, r.data.detail);
-    const signature = signB64({ purpose: 'graas-register', agentId: this.agentId, challenge: r.data.challenge }, this.key);
-    const p = await this._http('POST', `/v1/agents/${this.agentId}/prove`, { signature }, h);
+
+    const c = await this._http('POST', '/v1/agents/' + this.agentId + '/challenge', undefined, h);
+    if (c.status >= 300) throw new GraasError(c.status, c.data.error, c.data.detail);
+
+    const signature = signB64({ purpose: 'graas-register', agentId: this.agentId, challenge: c.data.challenge }, this.key);
+    const p = await this._http('POST', '/v1/agents/prove', { agentId: this.agentId, signature }, h);
     if (p.status !== 200) throw new GraasError(p.status, p.data.error, p.data.detail);
     return 'pending_approval';
   }
@@ -110,3 +110,4 @@ class GraasSession {
 }
 
 module.exports = { GraasSession, GraasError, loadOrCreateKey, canonical, sha256, commit, signB64 };
+

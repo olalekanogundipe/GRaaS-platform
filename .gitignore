@@ -311,3 +311,22 @@ poetry.toml
 pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/node,python
+
+### GRaaS: secrets and local state (never commit) ###
+# Keys. Generate dev keys with: node scripts/gen-dev-keys.js
+*.pem
+*.key
+.keys/
+kernel-keys/
+.kernel-key.pem
+.agent-key.pem
+
+# Local databases and runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Backups written by kernel-patch/apply-graas-patch
+*.pre-graas

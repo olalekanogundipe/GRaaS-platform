@@ -56,15 +56,20 @@ class GraasSession {
 
   async register() {
     const h = { 'x-api-key': this.apiKey };
-    let r = await this._http('POST', '/v1/agents/register', { agentId: this.agentId, publicKeyPem: this.publicKeyPem }, h);
-    if (r.status === 409) {
-      r = await this._http('POST', `/v1/agents/${this.agentId}/challenge`, undefined, h);
-      if (r.status === 409) return 'already_proven';
-    }
+    
+    // 1. Register the agent
+    const r = await this._http('POST', '/v1/agents/register', { agentId: this.agentId, publicKeyPem: this.publicKeyPem }, h);
     if (r.status >= 300) throw new GraasError(r.status, r.data.error, r.data.detail);
-    const signature = signB64({ purpose: 'graas-register', agentId: this.agentId, challenge: r.data.challenge }, this.key);
-    const p = await this._http('POST', `/v1/agents/${this.agentId}/prove`, { signature }, h);
+
+    // 2. Request a cryptographic challenge nonce
+    const c = await this._http('POST', '/v1/agents/' + this.agentId + '/challenge', undefined, h);
+    if (c.status >= 300) throw new GraasError(c.status, c.data.error, c.data.detail);
+
+    // 3. Sign the challenge and prove possession of the private key
+    const signature = signB64({ purpose: 'graas-register', agentId: this.agentId, challenge: c.data.challenge }, this.key);
+    const p = await this._http('POST', '/v1/agents/prove', { agentId: this.agentId, signature }, h);
     if (p.status !== 200) throw new GraasError(p.status, p.data.error, p.data.detail);
+    
     return 'pending_approval';
   }
 
@@ -76,7 +81,7 @@ class GraasSession {
   }
 
   async _call(path, body) {
-    const r = await this._http('POST', `/v1/executions/${this.executionId}${path}`, body,
+    const r = await this._http('POST', '/v1/executions/' + this.executionId + path, body,
       { 'x-agent-id': this.agentId, 'x-call-token': this.callToken });
     if (r.data.chainHead) this.head = r.data.chainHead;
     if (r.status !== 200) throw new GraasError(r.status, r.data.error, r.data.detail);
@@ -86,7 +91,10 @@ class GraasSession {
   async delegate(to, capability, payload) {
     return (await this._call('/delegate', { to, capability, payload })).result;
   }
-  authorize(action) { return this._call('/authorize', { action }); }
+  
+  authorize(action) { 
+    return this._call('/authorize', { action }); 
+  }
   
   _signedStep(name, inputHash, outputHash, status, extra = {}) {
     const record = {
@@ -98,15 +106,22 @@ class GraasSession {
     return this._call('/steps', body);
   }
   
-  step(name, input, output, status = 'success') { return this._signedStep(name, sha256(input), sha256(output), status); }
-  rawStep(name, inputHash, outputHash, status = 'success') { return this._signedStep(name, inputHash, outputHash, status); }
+  step(name, input, output, status = 'success') { 
+    return this._signedStep(name, sha256(input), sha256(output), status); 
+  }
   
+  rawStep(name, inputHash, outputHash, status = 'success') { 
+    return this._signedStep(name, inputHash, outputHash, status); 
+  }
+
   anchor({ kernelChainHead, kernelEntries, kernelVersion }) {
     return this._signedStep('kernel_anchor', sha256({ kernelVersion }), kernelChainHead, 'success',
       { kernelChainHead, kernelEntries, kernelVersion });
   }
   
-  async finalize(failure) { return this._call('/finalize', failure ? { failure } : {}); }
+  async finalize(failure) { 
+    return this._call('/finalize', failure ? { failure } : {}); 
+  }
 }
 
 module.exports = { GraasSession, GraasError, loadOrCreateKey, canonical, sha256, commit, signB64 };

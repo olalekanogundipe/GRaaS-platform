@@ -1,154 +1,87 @@
-// src/server.js
-console.log('[SERVER] 1. Starting server.js...');
-
-import express from "express";
-console.log('[SERVER] 2. Express imported');
-
+﻿import express from "express";
+import { fileURLToPath } from "url";
+import path from "path";
+import { runWorkflow } from "./olang.js";
 import { store } from "./store.js";
-console.log('[SERVER] 3. Store imported');
 
-import { createExecution, verifyExecution, createContract } from "./core.js";
-console.log('[SERVER] 4. Core imported');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PORT = process.env.PORT || 3001;
+
+console.log("[SERVER] 1. Starting server.js...");
+console.log("[SERVER] 2. Express imported");
+console.log("[SERVER] 3. Store imported");
+console.log("[SERVER] 4. Olang imported");
 
 const app = express();
 app.use(express.json());
-console.log('[SERVER] 5. Express app configured');
+console.log("[SERVER] 5. Express app configured");
 
-// --- 🆕 Dynamic Agent Registration (Zero Hardcoding) ---
-app.post("/register-agent", (req, res) => {
-  const { agentId, endpoint, pubkey, capabilities } = req.body;
-  if (!agentId || !endpoint || !pubkey) {
-    return res.status(400).json({ error: "agentId, endpoint, and pubkey are required" });
-  }
-  
-  // SSRF Protection: Only allow localhost or HTTPS endpoints
-  if (!endpoint.startsWith('http://localhost') && !endpoint.startsWith('https://')) {
-     return res.status(400).json({ error: "Invalid endpoint. Must be localhost or HTTPS." });
-  }
-
-  // Store agent with its declared capabilities for dynamic resolution
-  store.saveAgent(agentId, endpoint, pubkey, capabilities || []);
-  res.json({ status: "REGISTERED", agentId, capabilities: capabilities || [] });
-});
-
-// --- Setup / Seed Endpoints (Capability-Based & Multi-Layer Billing) ---
 app.post("/seed/contract", async (req, res) => {
   try {
-    const {
-      contractId,
-      providerId,
-      name,
-      requiredCapabilities,
-      permittedActions,
-      prohibitedActions,
-      pricePerResult,
-      commissionRate,
-      agentId
-    } = req.body;
-
-    // 1. Validate required fields
-    if (!contractId || !providerId || !name) {
-      return res.status(400).json({
-        error: 'missing_fields',
-        detail: 'contractId, providerId, and name are required'
-      });
-    }
-
-    // 2. Validate capabilities
-    if (!Array.isArray(requiredCapabilities) || requiredCapabilities.length === 0) {
-      return res.status(400).json({
-        error: 'invalid_capabilities',
-        detail: 'requiredCapabilities must be a non-empty array'
-      });
-    }
-
-    // 3. Validate pricing
-    if (!pricePerResult || pricePerResult <= 0) {
-      return res.status(400).json({
-        error: 'invalid_pricing',
-        detail: 'pricePerResult must be a positive number (in cents)'
-      });
-    }
-
-    // 4. Create the contract via core logic
-    const contract = await createContract({
-      contractId,
-      providerId,
-      name,
-      requiredCapabilities,
-      permittedActions: permittedActions || [],
-      prohibitedActions: prohibitedActions || [],
-      pricePerResult,
-      commissionRate: commissionRate || 0.20, // Default 20% platform commission
-      agentId,
-      billingEnabled: true
+    const { contractId, providerId, name, requiredCapabilities, pricePerResult } = req.body;
+    await store.saveContract({
+      id: contractId, providerId, name, requiredCapabilities, pricePerResult, commissionRate: 0.2
     });
-
-    res.json({ status: "SEEDED", contract });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.json({ success: true, message: `Contract ${contractId} seeded` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
-// --- GRaaS Endpoints ---
 app.post("/executions", async (req, res) => {
   try {
     const { contractId, inputs } = req.body;
-    const execution = await createExecution(contractId, inputs);
-    res.status(201).json(execution);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+    const executionId = `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    await store.saveExecution(executionId, { contractId, inputs, status: "PENDING" });
+    const result = await runWorkflow(contractId, inputs, {});
+    await store.saveExecutionResult(executionId, result);
+    res.json({ executionId, status: "COMPLETED" });
+  } catch (error) {
+    console.error("[SERVER] Execution failed:", error.message);
+    res.status(400).json({ error: error.message });
   }
 });
 
 app.post("/executions/:id/verify", async (req, res) => {
   try {
-    const execution = await verifyExecution(req.params.id);
-    res.json(execution);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.get("/certificates/:id", (req, res) => {
-  const cert = store.getCertificate(req.params.id);
-  if (!cert) return res.status(404).json({ error: "Certificate not found" });
-  res.json(cert);
-});
-
-// --- 🆕 Updated Metering with Multi-Layer Billing Math ---
-app.get("/meter", (req, res) => {
-  const meters = store.getAllMeters();
-  const billing = [];
-  
-  for (const [providerId, contracts] of Object.entries(meters)) {
-    for (const [contractId, count] of Object.entries(contracts)) {
-      const contract = store.getContract(contractId);
-      const price = contract ? contract.pricePerResult : 0;
-      const commissionRate = contract ? (contract.commissionRate || 0.20) : 0.20;
+    const { id } = req.params;
+    const execution = await store.getExecution(id);
+    if (!execution) return res.status(404).json({ error: "Execution not found" });
+    
+    //  THIS IS THE DEBUG LINE: It will print the exact structure to the console!
+    console.log(" DEBUG VERIFY - Full execution.result:", JSON.stringify(execution.result, null, 2));
+    
+    const result = execution.result || {};
+    const finalStatus = 
+      result?.result?.final_result?.status || 
+      result?.result?.status ||
+      result?.final_result?.status || 
+      result?.status || 
+      "UNKNOWN";
       
-      const totalAmount = count * price;
-      const platformCommission = Math.round(totalAmount * commissionRate);
-      const providerNetRevenue = totalAmount - platformCommission;
-
-      billing.push({
-        providerId,
-        contractId,
-        verifiedResults: count,
-        unitPrice: price,
-        commissionRate: `${(commissionRate * 100).toFixed(0)}%`,
-        totalAmount,
-        platformCommission,
-        providerNetRevenue
-      });
-    }
+    const billable = finalStatus === "COMPLETED" || finalStatus === "VERIFIED";
+    
+    res.json({ executionId: id, status: finalStatus, billable: billable, result: result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  res.json({ meters, billing });
 });
 
-const PORT = process.env.PORT || 3000;
-console.log(`[SERVER] 6. Attempting to listen on port ${PORT}...`);
+app.post("/invoke", async (req, res) => {
+  try {
+    const { workflow, inputs, executionId, action, context } = req.body;
+    if (workflow) {
+      const result = await runWorkflow(workflow, inputs || {}, { executionId });
+      return res.json({ success: true, result: result.result || result });
+    }
+    res.json({ success: true, result: { status: "invoked" } });
+  } catch (error) {
+    console.error("[GRaaS] Kernel /invoke failed:", error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 app.listen(PORT, () => {
-  console.log(`✅ GRaaS Platform MVP v0.2 running on port ${PORT}`);
+  console.log(`[SERVER] 6. Attempting to listen on port ${PORT}...`);
+  console.log(` GRaaS Platform MVP v0.2 running on port ${PORT}`);
 });
