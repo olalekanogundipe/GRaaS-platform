@@ -134,7 +134,8 @@ Eval run: 75 cases (5 languages × 3 modes × 5 cases), seed 42, synthetic data 
 - **Does not replace the customer's DPIA.** If a customer routes redacted data to a global LLM, they remain responsible for their own lawful basis and transfer mechanisms under NDPA 2023 and the 2025 GAID.
 - **Does not provide "legal compliance."** It provides *auditable evidence* to support the customer's own compliance posture.
 - **Does not catch all PII in all languages.** Coverage is measured per language; gaps are published, not hidden.
-- **Does not prevent prompt injection.** Financial intent blocking is a separate control layer; prompt injection defences are out of scope for this wedge.
+- **Prevents deceptive completion claims.** The kernel scans LLM outputs across 13 languages for phrases like "I have successfully transferred" or "payment approved" that would falsely claim a financial action was executed. This is a targeted defense against LLM hallucination of unauthorized actions, not a general-purpose prompt injection defense.
+- **Does not prevent general prompt injection.** Jailbreaks, instruction overrides, and data exfiltration via prompt manipulation are out of scope for this wedge. Customers should layer additional prompt injection defenses (e.g., input sanitization, output filtering, model fine-tuning) as needed.
 
 ---
 
