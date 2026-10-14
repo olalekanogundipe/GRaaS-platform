@@ -8,9 +8,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ROOT_DIR = path.join(__dirname, '..', '..');
 
-console.log('🚀 Starting Full GRaaS Stack (Registry + Gateway + Agents)...');
+// Determine the actual port the gateway will use (Render's dynamic port or 3000 locally)
+const GATEWAY_PORT = process.env.PORT || '3000';
+const GATEWAY_URL = `http://localhost:${GATEWAY_PORT}`;
 
-// 1. Start the Global Registry (The central hub)
+console.log('🚀 Starting Full GRaaS Stack (Registry + Gateway + Agents)...');
+console.log(`🔗 Gateway will be available at: ${GATEWAY_URL}`);
+
+// 1. Start the Global Registry
 console.log('⏳ Starting Global Registry on port 4000...');
 spawn('node', ['src/index.js'], {
   cwd: path.join(ROOT_DIR, 'registry'),
@@ -18,16 +23,15 @@ spawn('node', ['src/index.js'], {
   stdio: 'inherit'
 });
 
-// Give the Registry a second to boot up before the Gateway tries to connect to it
 setTimeout(() => {
   // 2. Start the Gateway
-  console.log('⏳ Starting Gateway on port 3000...');
+  console.log(`⏳ Starting Gateway on port ${GATEWAY_PORT}...`);
   spawn('node', ['src/index.js'], {
     cwd: path.join(__dirname, '..'),
     env: { 
       ...process.env, 
-      PORT: process.env.PORT || '3000', 
-      REGISTRY_URL: 'http://localhost:4000' // Explicitly tell Gateway where Registry is
+      PORT: GATEWAY_PORT,
+      REGISTRY_URL: 'http://localhost:4000'
     },
     stdio: 'inherit'
   });
@@ -42,18 +46,23 @@ setTimeout(() => {
     console.log(`⏳ Starting ${name} on port ${port}...`);
     spawn('node', ['server.js'], {
       cwd: path.join(ROOT_DIR, dir),
-      env: { ...process.env, PORT: port },
+      env: { 
+        ...process.env, 
+        PORT: port,
+        // 🔥 CRITICAL FIX: Tell the agents exactly where the Gateway is!
+        GATEWAY_URL: GATEWAY_URL 
+      },
       stdio: 'inherit'
     });
   });
-}, 1500); // 1.5 second delay ensures Registry is ready for Gateway
+}, 1500);
 
-// 4. Auto-Register & Fund Default Agents (Platform Sponsored)
+// 4. Auto-Register & Fund Default Agents
 async function bootstrapDefaultAgents() {
-  console.log('\n⏳ Waiting for services to fully initialize...');
-  await new Promise(r => setTimeout(r, 6000)); // Wait 6 seconds for everything to boot
+  console.log('\n⏳ Waiting for Gateway and Turso DB to fully initialize...');
+  // Increased wait time to 10 seconds to ensure Turso connection is ready
+  await new Promise(r => setTimeout(r, 10000)); 
 
-  const gatewayUrl = process.env.GATEWAY_URL || `http://localhost:${process.env.PORT || 3000}`;
   const adminKey = process.env.ADMIN_API_KEY || 'admin-master-key';
 
   const defaultAgents = [
@@ -63,8 +72,10 @@ async function bootstrapDefaultAgents() {
 
   for (const agent of defaultAgents) {
     try {
+      console.log(`🔄 Bootstrapping ${agent.id} via ${GATEWAY_URL}...`);
+      
       // Register
-      await fetch(`${gatewayUrl}/v1/agents/register`, {
+      const regRes = await fetch(`${GATEWAY_URL}/v1/agents/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -75,19 +86,22 @@ async function bootstrapDefaultAgents() {
           isPlatformManaged: true 
         })
       });
+      if (!regRes.ok) throw new Error(await regRes.text());
 
       // Approve
-      await fetch(`${gatewayUrl}/v1/admin/agents/${agent.id}/approve`, {
+      const appRes = await fetch(`${GATEWAY_URL}/v1/admin/agents/${agent.id}/approve`, {
         method: 'POST',
         headers: { 'x-admin-key': adminKey }
       });
+      if (!appRes.ok) throw new Error(await appRes.text());
 
-      // Fund with 10,000 CR
-      await fetch(`${gatewayUrl}/v1/agents/${agent.id}/deposit`, {
+      // Fund
+      const fundRes = await fetch(`${GATEWAY_URL}/v1/agents/${agent.id}/deposit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ amount: 10000 })
       });
+      if (!fundRes.ok) throw new Error(await fundRes.text());
 
       console.log(`✅ [BOOTSTRAP] ${agent.id} registered, approved, and funded with 10,000 CR.`);
     } catch (err) {
