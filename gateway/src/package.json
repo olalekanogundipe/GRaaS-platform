@@ -1,14 +1,18 @@
 {
-   "name": "graas-gateway",
+  "name": "graas-gateway",
   "version": "1.2.0",
   "type": "module",
   "scripts": {
-        "start": "node src/server.js",
+    "start": "node src/server.js",
     "dev": "node src/server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "@libsql/client": "^0.5.0",
     "undici": "^6.19.0",
-    "pg": "^8.11.0"
+    "pg": "^8.11.0",
+    "groq-sdk": "^0.5.0"
   }
 }
